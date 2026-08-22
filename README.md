@@ -115,7 +115,7 @@ git push
 
 ## Status
 
-- [ ] Audio recording (frontend)
+- [x] Audio recording (frontend)
 - [ ] Send audio to backend
 - [ ] Backend → Gemini (basic upload)
 - [ ] Backend → Gemini Live API (real-time streaming)
