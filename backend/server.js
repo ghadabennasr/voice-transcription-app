@@ -1,37 +1,28 @@
 require("dotenv").config();
 const fastify = require("fastify")({ logger: true });
-const { GoogleGenAI } = require("@google/genai");
+const { GoogleGenAI, Modality } = require("@google/genai");
+const websocketPlugin = require("@fastify/websocket");
 
-// Autorise le frontend (localhost:3000) à faire des requêtes vers ce backend
 fastify.register(require("@fastify/cors"), {
   origin: "http://localhost:3000",
 });
-
-// Permet de recevoir des fichiers (l'audio enregistré)
 fastify.register(require("@fastify/multipart"));
+fastify.register(websocketPlugin);
 
-// Client Gemini, initialisé avec la clé lue depuis .env
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const LIVE_MODEL = "gemini-3.5-transcribe-live";
 
-// Route de test simple, pour vérifier que le serveur tourne
 fastify.get("/", async () => {
   return { status: "Backend is running" };
 });
 
-// La vraie route : reçoit l'audio, l'envoie à Gemini, renvoie la transcription
+// --- Route existante de l'étape 3 (upload simple) : inchangée ---
 fastify.post("/transcribe", async (request, reply) => {
-  const data = await request.file(); // récupère le fichier envoyé
-
-  if (!data) {
-    return reply.status(400).send({ error: "No audio file received" });
-  }
+  const data = await request.file();
+  if (!data) return reply.status(400).send({ error: "No audio file received" });
 
   const buffer = await data.toBuffer();
-  fastify.log.info(`Received audio file: ${data.filename}, size: ${buffer.length} bytes`);
-
   try {
-    const audioBase64 = buffer.toString("base64");
-
     const response = await ai.models.generateContent({
       model: "gemini-3.6-flash",
       contents: [
@@ -43,31 +34,90 @@ fastify.post("/transcribe", async (request, reply) => {
             },
             {
               inlineData: {
-                mimeType: data.mimetype=== "application/octet-stream" ? "audio/mp3" : data.mimetype,
-                data: audioBase64,
+                mimeType: data.mimetype === "application/octet-stream" ? "audio/mp3" : data.mimetype,
+                data: buffer.toString("base64"),
               },
             },
           ],
         },
       ],
     });
-
-
-    const transcription = response.text;
-
-    return {
-      message: "Transcription successful",
-      filename: data.filename,
-      sizeInBytes: buffer.length,
-      transcription,
-    };
+    return { message: "Transcription successful", filename: data.filename, transcription: response.text };
   } catch (err) {
     fastify.log.error(err);
     return reply.status(500).send({ error: "Gemini transcription failed", details: err.message });
   }
 });
 
-// Démarre le serveur sur le port 4000
+// --- NOUVELLE route : WebSocket pour le streaming temps réel ---
+fastify.register(async function (fastify) {
+  fastify.get("/ws-transcribe", { websocket: true }, (socket, req) => {
+    fastify.log.info("Frontend connecté au WebSocket");
+
+    let geminiSession = null;
+    let sessionReady = false;
+
+    // On ouvre une session Gemini Live DÈS que le frontend se connecte
+    ai.live
+      .connect({
+        model: LIVE_MODEL,
+        config: {
+          responseModalities: [Modality.TEXT],
+          inputAudioTranscription: {},
+        },
+        callbacks: {
+          onopen: () => {
+            fastify.log.info("Session Gemini Live ouverte");
+            sessionReady = true;
+          },
+          onmessage: (message) => {
+            const interim = message.serverContent?.interimInputTranscription?.text;
+            if (interim) {
+              // On relaie la transcription au frontend, en JSON
+              socket.send(JSON.stringify({ type: "transcript", text: interim }));
+            }
+          },
+          onerror: (e) => {
+            fastify.log.error("Erreur Gemini Live: " + e.message);
+            socket.send(JSON.stringify({ type: "error", message: e.message }));
+          },
+          onclose: (e) => {
+            fastify.log.info("Session Gemini Live fermée: " + (e.reason || "sans raison"));
+          },
+        },
+      })
+      .then((session) => {
+        geminiSession = session;
+      })
+      .catch((err) => {
+        fastify.log.error("Échec de connexion à Gemini Live: " + err.message);
+        socket.send(JSON.stringify({ type: "error", message: err.message }));
+      });
+
+    // Chaque paquet audio (binaire, PCM 16kHz déjà prêt) envoyé par le frontend
+    // est directement relayé à Gemini
+    socket.on("message", (rawData) => {
+      if (!sessionReady || !geminiSession) return; // ignore si Gemini pas encore prêt
+
+      // rawData est un Buffer binaire (PCM brut envoyé par le frontend)
+      geminiSession.sendRealtimeInput({
+        audio: {
+          data: rawData.toString("base64"),
+          mimeType: "audio/pcm;rate=16000",
+        },
+      });
+    });
+
+    socket.on("close", () => {
+      fastify.log.info("Frontend déconnecté");
+      if (geminiSession) {
+        geminiSession.sendRealtimeInput({ audioStreamEnd: true });
+        geminiSession.close();
+      }
+    });
+  });
+});
+
 const start = async () => {
   try {
     await fastify.listen({ port: 4000 });

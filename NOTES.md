@@ -75,3 +75,24 @@ Issues resolved along the way:
 This confirms the core Gemini Live connection works correctly. Next: connect this to a real WebSocket relay between the frontend microphone and the backend, instead of a pre-recorded file.
 
 ### Screenshots
+![Terminal showing successful streaming transcription](./screenshots/step4-part1-terminal-test.png)
+
+### Part 2 — Full real-time integration (frontend mic → backend → Gemini Live)
+
+### What was built
+A full real-time pipeline: the frontend (`LiveTranscriber.tsx`) captures raw microphone audio using the Web Audio API, converts it to 16-bit PCM at 16kHz on the fly, and streams it continuously to the backend over a WebSocket (`/ws-transcribe`). The backend opens a Gemini Live session per connection, relays every audio chunk it receives straight to Gemini, and relays back every transcription update to the frontend, which displays it live as the user speaks.
+
+### Why this approach
+Unlike Step 2/3 (record everything, then send one file), true real-time requires sending small audio chunks continuously while recording. Used `ScriptProcessorNode` from the Web Audio API to access raw audio samples in ~4096-sample chunks as they're captured (note: this API is deprecated in favor of `AudioWorklet`, but still works reliably; a future improvement could migrate to `AudioWorklet`). Each chunk is downsampled from the browser's native rate (usually 44.1kHz/48kHz) to 16kHz and converted from Float32 to Int16 PCM manually, since the browser doesn't capture audio in that format natively. A WebSocket (via `@fastify/websocket`) was used instead of HTTP because it keeps a persistent two-way connection open, which HTTP requests can't do.
+
+### How it was tested
+Manual end-to-end test: started the backend and frontend servers separately, clicked "Start Live Transcription," granted microphone permission, and spoke a Tunisian Derja sentence while watching both the browser UI and the backend terminal logs simultaneously.
+
+### Result
+Real-time transcription worked correctly end-to-end: the backend logs confirmed the WebSocket connection, the Gemini Live session opening, and clean disconnection when stopping. The frontend displayed the transcription updating live as speech was captured.
+
+One bug fixed along the way: the installed version of `@fastify/websocket` passes the raw WebSocket directly as the handler's first argument, instead of wrapping it in a `{ socket }` object like older versions/documentation examples — code was updated from `connection.socket.on(...)` to `socket.on(...)` accordingly.
+
+### Screenshots
+![Backend logs showing successful WebSocket + Gemini Live session](./screenshots/step4-part2-backend-logs.png)
+![Frontend showing live transcript](./screenshots/step4-part2-frontend-result.png)

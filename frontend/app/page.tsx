@@ -1,5 +1,5 @@
-import AudioRecorder from "./components/AudioRecorder";
+import LiveTranscriber from "./components/LiveTranscriber";
 
 export default function Home() {
-  return <AudioRecorder />;
+  return <LiveTranscriber />;
 }
