@@ -51,3 +51,27 @@ This confirms the backend → Gemini connection works correctly for basic (non-s
 ### Screenshots
 ![Postman test - Gemini transcription](./screenshots/step3-postman-gemini.png)
 
+## Step 4 — Backend → Gemini Live API (Real-Time Streaming)
+
+
+### What was built
+An isolated test script (`backend/live-api-tests/test-live-api.js`) that validates the Gemini Live API connection independently, before integrating it into the real backend/frontend flow. Also built a helper script (`list-live-models.js`) to query which Live-capable models are actually available for our API key, since guessing model names caused several failed attempts.
+
+### Why this approach
+The Live API requires raw PCM audio (16-bit, 16kHz, mono) instead of a regular audio file like Step 3 so a WAV file first needs its sample rate, bit depth, and channel count converted manually. Chose to validate this connection alone first (isolated script, pre-recorded audio, no frontend/WebSocket yet) to isolate potential failure points: is the problem the Gemini connection itself, or the real-time streaming/WebSocket layer? Testing everything at once would make debugging much harder.
+
+Used the model `gemini-3.5-transcribe-live` (found via the model-listing script) instead of a generic "flash-live" model, since it's purpose-built for transcription rather than full conversational audio responses. Set `responseModalities: [Modality.TEXT]` since we only need text output, not a spoken audio reply from Gemini.
+
+### How it was tested
+Ran the script directly with Node (`node test-live-api.js`) using a pre-recorded `.wav` file, and logged every message received from the Live API session to see the raw response structure, since the exact field names weren't obvious from documentation alone.
+
+### Result
+Successfully received real-time, incremental transcription of Tunisian Derja audio. The correct response field is `serverContent.interimInputTranscription.text` (not `inputTranscription` as initially assumed) — transcription arrives progressively as partial/interim results while more audio is processed, confirming the streaming behavior works as expected.
+
+Issues resolved along the way:
+- Original test audio file was stereo, 48kHz — had to manually downmix to mono and resample to 16kHz (the `wavefile` library's `toMono()` method doesn't exist in the installed version, so channel averaging was done manually)
+- Initial model names (`gemini-3.1-flash-live-preview`, `gemini-live-2.5-flash`) were invalid or unsupported — resolved by querying available models directly via the API instead of guessing
+
+This confirms the core Gemini Live connection works correctly. Next: connect this to a real WebSocket relay between the frontend microphone and the backend, instead of a pre-recorded file.
+
+### Screenshots
