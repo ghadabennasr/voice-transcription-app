@@ -103,7 +103,7 @@ One bug fixed along the way: the installed version of `@fastify/websocket` passe
 Improved the transcript display in `LiveTranscriber.tsx`: instead of replacing the text on every update (losing previous sentences), the UI now keeps a running history. Finalized text (once Gemini signals `turnComplete`) is kept permanently, while the current in-progress transcription shows separately in italic/grey until it's finalized. Added a "Clear" button to reset the transcript and a "Copy" button to copy the full text to the clipboard. The transcript box also auto-scrolls to the bottom as new text arrives.
 
 ### Why this approach
-The backend wasn't originally forwarding a clear "end of turn" signal to the frontend, so there was no reliable moment to "lock in" a finished sentence — `server.js` was updated to send a `turn_complete` message whenever Gemini's `serverContent.turnComplete` fires, which the frontend uses to move the current interim text into permanent history.
+Initially tried relying on a `turnComplete` signal from Gemini to know when to "lock in" a finished sentence — but testing showed the `gemini-3.5-transcribe-live` model never sends this signal, since it's a continuous transcription model rather than a turn-based conversational one. Switched to a silence-based approach instead: every time new transcript text arrives, a 1.2-second timer resets; if no update arrives before it fires, the current interim text is finalized into permanent history. This works without depending on a signal the model doesn't provide.
 
 ### How it was tested
 Manual test: spoke a sentence, paused a few seconds (to let Gemini finalize the turn), then spoke a second sentence. Confirmed both sentences remained visible one after another instead of the second one overwriting the first.
@@ -113,3 +113,50 @@ Transcript history now persists correctly across multiple turns. Clear and Copy 
 
 ### Screenshots
 ![Frontend showing persistent transcript history](./screenshots/step5-frontend-transcript-history.png)
+
+## Step 6 — Full End-to-End Testing (Real Conditions)
+
+**Date:** 01/09/2026
+**Done by:** Ghada
+
+### What was tested
+
+- [x] Tunisian Derja (pure)
+- [x] Code-switching (Derja + French/English)
+- [x] Background noise
+- [x] Numbers/punctuation
+- [x] Real-time latency under normal use
+
+### Why tested this way
+Same test categories as the original research report (Tunisian Derja, code-switching, background noise, numbers/punctuation), but this time run through our actual app (frontend mic → WebSocket → backend → Gemini Live) instead of Gemini's chat playground — to confirm the real pipeline performs consistently with what was observed during the research phase, not just the raw model in isolation.
+
+### Result
+
+**Test 1 — Pure Tunisian Derja:** Good. Transcription was accurate, consistent with the strong Derja performance observed during the research phase.
+
+**Test 2 — Code-switching (Derja + French):** Good. French words mixed mid-sentence were transcribed correctly without being translated or "corrected" into standard Arabic — consistent with what was expected based on the research findings.
+
+**Test 3 — Background noise:** Good. Background noise was correctly filtered out — no hallucinated words were transcribed from noise alone, consistent with the strong noise-handling behavior observed during the research phase (Gemini was the only provider that didn't incorrectly transcribe background noise as spoken words).
+
+**Test 4 — Numbers:** Partially correct. Numbers are transcribed as written-out words (e.g. "ثلاثة") instead of digits (e.g. "3"). This is technically an accurate transcription of what was said, but not the digit format a real interview transcript would likely need — worth deciding whether post-processing (converting spelled-out numbers to digits) is needed before this goes to production.
+
+**Test 5 — Real-time latency / pause handling:** Some mistakes, especially when speaking fast. The current silence-based finalization (1.2s of no new text before locking a sentence into history) struggles to keep up when speech is fast and continuous — sentences may get cut at the wrong point or merged incorrectly. This is a tuning issue (the 1.2s threshold, and/or the chunk size sent to Gemini) rather than a fundamental flaw.
+
+### Known issues to address before production
+- Numbers are transcribed as words, not digits — needs a decision on whether post-processing is required
+- Fast speech can cause incorrect sentence boundaries — the silence-detection timing may need tuning per real interview conditions
+
+### Screenshots
+![Test 1 - Pure Tunisian Derja](./screenshots/step6-test1-derja-pure.png)
+![Test 2 - Code-switching](./screenshots/step6-test2-code-switching.png)
+![Test 3 - Background noise](./screenshots/step6-test3-background-noise.png)
+![Test 4 - Numbers and punctuation](./screenshots/step6-test4-numbers-punctuation.png)
+![Test 5 - Latency and pauses](./screenshots/step6-test5-latency-pauses.png)
+
+---
+
+## Open Issues / Things to Revisit
+
+- Numbers come out as spelled words, not digits — may need post-processing depending on TalentAI's requirements
+- Sentence finalization (silence-based, 1.2s threshold) sometimes cuts too early/late when speech is fast — needs tuning
+- `ScriptProcessorNode` used for audio capture is deprecated by browsers (still functional, but `AudioWorklet` would be the modern replacement for a production version)
