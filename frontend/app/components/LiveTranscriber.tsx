@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 export default function LiveTranscriber() {
   const [isRecording, setIsRecording] = useState(false);
-  const [transcript, setTranscript] = useState("");
+  const [finalizedText, setFinalizedText] = useState(""); // texte confirmé, ne bouge plus
+  const [interimText, setInterimText] = useState(""); // texte provisoire, en cours de complétion
   const [status, setStatus] = useState("Idle");
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -12,9 +13,30 @@ export default function LiveTranscriber() {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const transcriptBoxRef = useRef<HTMLDivElement | null>(null);
+  const interimTextRef = useRef(""); // pour lire la dernière valeur dans les callbacks WS
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Convertit un tableau Float32 (format natif du navigateur) en Int16
-  // (format PCM attendu par Gemini)
+  useEffect(() => {
+    interimTextRef.current = interimText;
+  }, [interimText]);
+
+  // Fige le texte en cours dans l'historique définitif
+  const finalizeCurrentText = () => {
+    if (interimTextRef.current) {
+      setFinalizedText((prev) => (prev ? prev + " " + interimTextRef.current : interimTextRef.current));
+      setInterimText("");
+      interimTextRef.current = "";
+    }
+  };
+
+  // Auto-scroll vers le bas à chaque nouvelle transcription
+  useEffect(() => {
+    if (transcriptBoxRef.current) {
+      transcriptBoxRef.current.scrollTop = transcriptBoxRef.current.scrollHeight;
+    }
+  }, [finalizedText, interimText]);
+
   function floatTo16BitPCM(float32Array: Float32Array): ArrayBuffer {
     const buffer = new ArrayBuffer(float32Array.length * 2);
     const view = new DataView(buffer);
@@ -26,16 +48,12 @@ export default function LiveTranscriber() {
     return buffer;
   }
 
-  // Rééchantillonne le son du taux natif du navigateur (souvent 44100/48000 Hz)
-  // vers 16000 Hz, requis par Gemini Live
   function downsampleTo16kHz(buffer: Float32Array, inputSampleRate: number): Float32Array {
     const targetRate = 16000;
     if (inputSampleRate === targetRate) return buffer;
-
     const ratio = inputSampleRate / targetRate;
     const newLength = Math.round(buffer.length / ratio);
     const result = new Float32Array(newLength);
-
     for (let i = 0; i < newLength; i++) {
       result[i] = buffer[Math.floor(i * ratio)];
     }
@@ -60,7 +78,6 @@ export default function LiveTranscriber() {
         const source = audioContext.createMediaStreamSource(stream);
         sourceRef.current = source;
 
-        // ScriptProcessorNode capture l'audio brut par petits blocs (4096 échantillons)
         const processor = audioContext.createScriptProcessor(4096, 1, 1);
         processorRef.current = processor;
 
@@ -68,7 +85,6 @@ export default function LiveTranscriber() {
           const inputData = event.inputBuffer.getChannelData(0);
           const downsampled = downsampleTo16kHz(inputData, audioContext.sampleRate);
           const pcmBuffer = floatTo16BitPCM(downsampled);
-
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(pcmBuffer);
           }
@@ -83,20 +99,30 @@ export default function LiveTranscriber() {
 
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
+
         if (data.type === "transcript") {
-          setTranscript(data.text);
+          // Le texte reçu est toujours la version la plus à jour du tour EN COURS
+          setInterimText(data.text);
+
+          // On repousse le "minuteur de silence" à chaque nouveau mot reçu.
+          // Si aucune mise à jour n'arrive pendant 1.2s, on considère la
+          // phrase terminée et on la fige dans l'historique (ce modèle
+          // n'envoie jamais de signal "turnComplete" explicite).
+          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = setTimeout(() => {
+            finalizeCurrentText();
+          }, 1200);
+        } else if (data.type === "turn_complete") {
+          // Gardé au cas où un autre modèle enverrait ce signal explicitement
+          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+          finalizeCurrentText();
         } else if (data.type === "error") {
           setStatus("Erreur: " + data.message);
         }
       };
 
-      ws.onerror = () => {
-        setStatus("Erreur de connexion WebSocket");
-      };
-
-      ws.onclose = () => {
-        setStatus("Déconnecté");
-      };
+      ws.onerror = () => setStatus("Erreur de connexion WebSocket");
+      ws.onclose = () => setStatus("Déconnecté");
     } catch (err) {
       console.error(err);
       setStatus("Erreur d'accès au micro");
@@ -110,38 +136,67 @@ export default function LiveTranscriber() {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     wsRef.current?.close();
 
+    // On fige tout texte en cours au moment de l'arrêt
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    finalizeCurrentText();
+
     setIsRecording(false);
     setStatus("Arrêté");
   };
 
-  return (
-    <div style={{ padding: "2rem", textAlign: "center" }}>
-      <h2>Transcription en temps réel</h2>
-      <p style={{ color: "#666", marginBottom: "1rem" }}>{status}</p>
+  const clearTranscript = () => {
+    setFinalizedText("");
+    setInterimText("");
+  };
 
-      {!isRecording ? (
-        <button onClick={startRecording} style={{ padding: "10px 20px", fontSize: "16px" }}>
-          🎙️ Start Live Transcription
+  const copyTranscript = () => {
+    const fullText = (finalizedText + " " + interimText).trim();
+    navigator.clipboard.writeText(fullText);
+  };
+
+  return (
+    <div style={{ padding: "2rem", maxWidth: "700px", margin: "0 auto" }}>
+      <h2 style={{ textAlign: "center" }}>Transcription en temps réel</h2>
+      <p style={{ color: "#666", textAlign: "center", marginBottom: "1rem" }}>{status}</p>
+
+      <div style={{ display: "flex", justifyContent: "center", gap: "10px", marginBottom: "1rem" }}>
+        {!isRecording ? (
+          <button onClick={startRecording} style={{ padding: "10px 20px", fontSize: "16px" }}>
+            🎙️ Start Live Transcription
+          </button>
+        ) : (
+          <button onClick={stopRecording} style={{ padding: "10px 20px", fontSize: "16px" }}>
+            ⏹️ Stop
+          </button>
+        )}
+        <button onClick={clearTranscript} style={{ padding: "10px 20px", fontSize: "16px" }}>
+          🗑️ Clear
         </button>
-      ) : (
-        <button onClick={stopRecording} style={{ padding: "10px 20px", fontSize: "16px" }}>
-          ⏹️ Stop
+        <button onClick={copyTranscript} style={{ padding: "10px 20px", fontSize: "16px" }}>
+          📋 Copy
         </button>
-      )}
+      </div>
 
       <div
+        ref={transcriptBoxRef}
         style={{
-          marginTop: "1.5rem",
           padding: "1rem",
-          minHeight: "80px",
+          minHeight: "150px",
+          maxHeight: "350px",
+          overflowY: "auto",
           border: "1px solid #ccc",
           borderRadius: "8px",
-          textAlign: "left",
+          textAlign: "right",
           direction: "rtl",
           fontSize: "1.1rem",
+          lineHeight: "1.8",
         }}
       >
-        {transcript || "La transcription apparaîtra ici..."}
+        <span>{finalizedText}</span>{" "}
+        <span style={{ color: "#999", fontStyle: "italic" }}>{interimText}</span>
+        {!finalizedText && !interimText && (
+          <span style={{ color: "#aaa" }}>La transcription apparaîtra ici...</span>
+        )}
       </div>
     </div>
   );

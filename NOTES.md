@@ -96,3 +96,20 @@ One bug fixed along the way: the installed version of `@fastify/websocket` passe
 ### Screenshots
 ![Backend logs showing successful WebSocket + Gemini Live session](./screenshots/step4-part2-backend-logs.png)
 ![Frontend showing live transcript](./screenshots/step4-part2-frontend-result.png)
+
+## Step 5 — Display/Play Response (Frontend)
+
+### What was built
+Improved the transcript display in `LiveTranscriber.tsx`: instead of replacing the text on every update (losing previous sentences), the UI now keeps a running history. Finalized text (once Gemini signals `turnComplete`) is kept permanently, while the current in-progress transcription shows separately in italic/grey until it's finalized. Added a "Clear" button to reset the transcript and a "Copy" button to copy the full text to the clipboard. The transcript box also auto-scrolls to the bottom as new text arrives.
+
+### Why this approach
+The backend wasn't originally forwarding a clear "end of turn" signal to the frontend, so there was no reliable moment to "lock in" a finished sentence — `server.js` was updated to send a `turn_complete` message whenever Gemini's `serverContent.turnComplete` fires, which the frontend uses to move the current interim text into permanent history.
+
+### How it was tested
+Manual test: spoke a sentence, paused a few seconds (to let Gemini finalize the turn), then spoke a second sentence. Confirmed both sentences remained visible one after another instead of the second one overwriting the first.
+
+### Result
+Transcript history now persists correctly across multiple turns. Clear and Copy buttons work as expected.
+
+### Screenshots
+![Frontend showing persistent transcript history](./screenshots/step5-frontend-transcript-history.png)

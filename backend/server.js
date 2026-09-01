@@ -73,8 +73,10 @@ fastify.register(async function (fastify) {
           onmessage: (message) => {
             const interim = message.serverContent?.interimInputTranscription?.text;
             if (interim) {
-              // On relaie la transcription au frontend, en JSON
               socket.send(JSON.stringify({ type: "transcript", text: interim }));
+            }
+            if (message.serverContent?.turnComplete) {
+              socket.send(JSON.stringify({ type: "turn_complete" }));
             }
           },
           onerror: (e) => {
