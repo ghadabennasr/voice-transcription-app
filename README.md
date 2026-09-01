@@ -119,4 +119,4 @@ git push
 - [x] Send audio to backend
 - [x] Backend → Gemini (basic upload)
 - [x] Backend → Gemini Live API (real-time streaming)
-- [ ] Display/play response in frontend
+- [x] Display/play response in frontend
