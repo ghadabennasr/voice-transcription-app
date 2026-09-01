@@ -33,3 +33,18 @@ Both tests passed with `200 OK`. The GET request returned the expected status me
 ![GET test - server status](./screenshots/step2-postman-get.png)
 ![POST test - audio file received](./screenshots/step2-postman-post.png)
 
+### Step 3 — Backend → Gemini (Basic Upload)
+### What was built
+Updated the /transcribe endpoint to send the received audio file to the Gemini API (gemini-3.6-flash) instead of just confirming receipt. The backend now returns the actual transcription text produced by Gemini.
+
+### Why this approach
+Used the official @google/genai SDK to call Gemini directly from the backend, with the model gemini-3.6-flash. The API key is stored in backend/.env (never committed, protected by .gitignore) and loaded with dotenv. The audio file is converted to base64 and sent as inline data. Added a fallback for the MIME type (application/octet-stream → audio/mp3) since Postman doesn't always set the correct MIME type on the uploaded file. The prompt instructs Gemini to transcribe only clearly spoken words, ignore background noise, and return an empty string if nothing is clearly said this avoids Gemini hallucinating words from silence/noise, one of the issues identified during the research phase testing.
+
+### How it was tested
+Tested with Postman, same pattern as Step 2: a POST request to /transcribe with an audio file attached as form-data. This time the response contains a real transcription instead of just the filename/size, confirming the backend successfully talks to Gemini's API (not just the browser playground used during the research phase).
+
+### Result
+The request returned 200 OK with a working transcription. This confirms the backend → Gemini connection works correctly for basic (non-streaming) upload, before moving on to the real-time Live API in Step 4.
+
+### Screenshots
+![Post test - Gemini transcription](./screenshots/step3-postman-gemini.png)
